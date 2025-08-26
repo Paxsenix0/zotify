@@ -8,7 +8,7 @@ from zotify.config import Zotify
 from zotify.const import (
     EPISODE_URL, SHOW_URL, PARTNER_URL, PERSISTED_QUERY, ERROR, ID, ITEMS, NAME,
     SHOW, DURATION_MS, EXT_MAP, IMAGES, URL, WIDTH, RELEASE_DATE, DESCRIPTION,
-    HTML_DESCRIPTION, YEAR
+    HTML_DESCRIPTION, YEAR, IMAGE_URL
 )
 from zotify.termoutput import PrintChannel, Printer, Loader
 from zotify.utils import (
