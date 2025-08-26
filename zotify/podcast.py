@@ -5,20 +5,55 @@ from pathlib import PurePath, Path
 from librespot.metadata import EpisodeId
 
 from zotify.config import Zotify
-from zotify.const import EPISODE_URL, SHOW_URL, PARTNER_URL, PERSISTED_QUERY, ERROR, ID, ITEMS, NAME, SHOW, DURATION_MS, EXT_MAP
+from zotify.const import (
+    EPISODE_URL, SHOW_URL, PARTNER_URL, PERSISTED_QUERY, ERROR, ID, ITEMS, NAME,
+    SHOW, DURATION_MS, EXT_MAP, IMAGES, URL, WIDTH, RELEASE_DATE, DESCRIPTION,
+    HTML_DESCRIPTION, YEAR
+)
 from zotify.termoutput import PrintChannel, Printer, Loader
-from zotify.utils import create_download_directory, fix_filename, fmt_duration, wait_between_downloads
+from zotify.utils import (
+    create_download_directory, fix_filename, fmt_duration, wait_between_downloads,
+    set_audio_tags, set_music_thumbnail
+)
 
 
-def get_episode_info(episode_id: str) -> tuple[str | None, str | None, str | None]:
+def parse_episode_metadata(episode_resp: dict) -> dict:
+    """ Parses the API response for an episode into a structured dictionary. """
+    episode_metadata = {}
+
+    episode_metadata[ID] = episode_resp[ID]
+    episode_metadata[NAME] = episode_resp[NAME]
+    episode_metadata[SHOW] = episode_resp[SHOW][NAME]
+    episode_metadata[DURATION_MS] = episode_resp[DURATION_MS]
+    episode_metadata[RELEASE_DATE] = episode_resp[RELEASE_DATE]
+    episode_metadata[YEAR] = episode_metadata[RELEASE_DATE].split('-')[0]
+    
+    # Use description, fallback to html_description if it exists
+    episode_metadata[DESCRIPTION] = episode_resp.get(DESCRIPTION, episode_resp.get(HTML_DESCRIPTION, ''))
+
+    largest_image = max(episode_resp[IMAGES], key=lambda img: img[WIDTH], default=None)
+    episode_metadata[IMAGE_URL] = largest_image[URL] if largest_image else ''
+
+    episode_metadata['album'] = episode_metadata[SHOW]
+    episode_metadata['artists'] = [episode_metadata[SHOW]]
+
+    return episode_metadata
+
+
+def get_episode_metadata(episode_id: str) -> dict | None:
+    """ Retrieves and parses metadata for a podcast episode. """
     with Loader(PrintChannel.PROGRESS_INFO, "Fetching episode information..."):
         (raw, resp) = Zotify.invoke_url(f'{EPISODE_URL}/{episode_id}')
-    if not resp:
-        Printer.hashtaged(PrintChannel.ERROR, 'INVALID EPISODE ID')
-    if ERROR in resp:
-        return None, None, None
-    duration_ms = resp[DURATION_MS]
-    return fix_filename(resp[SHOW][NAME]), duration_ms, fix_filename(resp[NAME])
+
+    if not resp or ERROR in resp:
+        Printer.hashtaged(PrintChannel.ERROR, 'INVALID EPISODE ID OR FAILED TO FETCH METADATA')
+        return None
+    
+    try:
+        return parse_episode_metadata(resp)
+    except Exception as e:
+        Printer.hashtaged(PrintChannel.ERROR, f'Failed to parse EPISODE_URL response: {str(e)}')
+        return None
 
 
 def get_show_episode_ids(show_id: str) -> list:
@@ -35,7 +70,7 @@ def download_podcast_directly(url, filename):
 
     r = requests.get(url, stream=True, allow_redirects=True)
     if r.status_code != 200:
-        r.raise_for_status()  # Will only raise for 4xx codes, so...
+        r.raise_for_status()
         raise RuntimeError(
             f"Request to {url} returned status code {r.status_code}")
     file_size = int(r.headers.get('Content-Length', 0))
@@ -62,19 +97,24 @@ def download_show(show_id, pbar_stack: list | None = None):
     pbar_stack.append(pbar)
 
     for episode in pbar:
+        resp = Zotify.invoke_url(f'{EPISODE_URL}/{episode_id}', raw=True)
+        pbar.set_description(resp.get(NAME, "Loading..."))
         download_episode(episode, pbar_stack)
-        pbar.set_description(get_episode_info(episode)[2])
         Printer.refresh_all_pbars(pbar_stack)
 
 
 def download_episode(episode_id, pbar_stack: list | None = None) -> None:
+    episode_metadata = get_episode_metadata(episode_id)
 
-    podcast_name, duration_ms, episode_name = get_episode_info(episode_id)
-
-    if podcast_name is None or episode_name is None or duration_ms is None:
+    if not episode_metadata:
         Printer.hashtaged(PrintChannel.ERROR, 'SKIPPING EPISODE - FAILED TO QUERY METADATA\n' +\
                                              f'Episode_ID: {str(episode_id)}')
-        wait_between_downloads(); return
+        wait_between_downloads()
+        return
+
+    podcast_name = fix_filename(episode_metadata[SHOW])
+    episode_name = fix_filename(episode_metadata[NAME])
+    duration_ms = episode_metadata[DURATION_MS]
 
     if Zotify.CONFIG.get_regex_episode():
         regex_match = Zotify.CONFIG.get_regex_episode().search(episode_name)
@@ -93,8 +133,8 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
         direct_download_url = resp["data"]["episode"]["audio"]["items"][-1]["url"]
 
         if "anon-podcast.scdn.co" in direct_download_url or "audio_preview_url" not in resp:
-            episode_id = EpisodeId.from_base62(episode_id)
-            stream = Zotify.get_content_stream(episode_id, Zotify.DOWNLOAD_QUALITY)
+            episode_id_obj = EpisodeId.from_base62(episode_id)
+            stream = Zotify.get_content_stream(episode_id_obj, Zotify.DOWNLOAD_QUALITY)
 
             if stream is None:
                 Printer.hashtaged(PrintChannel.ERROR, 'SKIPPING EPISODE - FAILED TO GET CONTENT STREAM\n' +\
@@ -128,13 +168,12 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
                 disable=not Zotify.CONFIG.get_show_download_pbar(),
                 pos=pos
             ) as pbar:
-                while True:
-                #for _ in range(int(total_size / Zotify.CONFIG.get_chunk_size()) + 2):
+                b = 0
+                while b < 5:
                     data = stream.input_stream.stream().read(Zotify.CONFIG.get_chunk_size())
                     pbar.update(file.write(data))
                     downloaded += len(data)
-                    if data == b'':
-                        break
+                    b += 1 if data == b'' else 0
                     if Zotify.CONFIG.get_download_real_time():
                         delta_real = time.time() - time_start
                         delta_want = (downloaded / total_size) * (int(duration_ms)/1000)
@@ -144,12 +183,15 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
             time_dl_end = time.time()
             time_elapsed_dl = fmt_duration(time_dl_end - time_start)
         else:
-            # TODO add failure catch for after this function
+            time_start = time.time()
             download_podcast_directly(direct_download_url, episode_path)
+            time_dl_end = time.time()
+            time_elapsed_dl = fmt_duration(time_dl_end - time_start)
 
     Printer.hashtaged(PrintChannel.DOWNLOADS, f'DOWNLOADED: "{filename}"\n' +\
                                               f'DOWNLOAD TOOK {time_elapsed_dl}')
 
+    episode_path_codec = None
     try:
         with Loader(PrintChannel.PROGRESS_INFO, "Identifying episode audio codec..."):
             ff_m = ffmpy.FFprobe(
@@ -162,7 +204,6 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
             if codec in EXT_MAP:
                 suffix = EXT_MAP[codec]
             else:
-                # gross, but shouldn't ever happen...
                 suffix = codec
 
             episode_path_codec = episode_path.with_suffix(f".{suffix}")
@@ -174,8 +215,22 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
                       f"File Renamed: {episode_path_codec.name}")
 
     except ffmpy.FFExecutableNotFoundError:
-        Path(episode_path).rename(episode_path.with_suffix(".mp3"))
+        episode_path_codec = episode_path.with_suffix(".mp3")
+        Path(episode_path).rename(episode_path_codec)
         Printer.hashtaged(PrintChannel.WARNING, 'FFMPEG NOT FOUND\n' +\
                                                 'SKIPPING CODEC ANALYSIS - OUTPUT ASSUMED MP3')
+
+    if episode_path_codec and episode_path_codec.exists():
+        try:
+            with Loader(PrintChannel.PROGRESS_INFO, "Applying metadata..."):
+                # For podcasts, genre isn't provided, so we'll just set it to "Podcast"
+                genres = ["Podcast"]
+                set_audio_tags(episode_path_codec, episode_metadata, total_discs=None, genres=genres, lyrics=None)
+                if episode_metadata[IMAGE_URL]:
+                    set_music_thumbnail(episode_path_codec, episode_metadata[IMAGE_URL], mode="podcast")
+        except Exception as e:
+            Printer.hashtaged(PrintChannel.ERROR, 'FAILED TO WRITE METADATA\n' + \
+                                                  'Ensure FFMPEG is installed and added to your PATH')
+            Printer.traceback(e)
 
     wait_between_downloads()
