@@ -9,6 +9,7 @@ TOTALTRACKS = 'totaltracks'
 TRACKNUMBER = 'tracknumber'
 TRACKTITLE = 'tracktitle'
 YEAR = 'year'
+COMMENT = 'comment'
 MP3_CUSTOM_TAG_PREFIX = 'TXXX:'
 M4A_CUSTOM_TAG_PREFIX = '----:com.apple.iTunes:'
 
