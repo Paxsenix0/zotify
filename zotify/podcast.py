@@ -13,7 +13,7 @@ from zotify.const import (
 from zotify.termoutput import PrintChannel, Printer, Loader
 from zotify.utils import (
     create_download_directory, fix_filename, fmt_duration, wait_between_downloads,
-    set_audio_tags, set_music_thumbnail
+    set_podcast_tags, set_music_thumbnail
 )
 
 
@@ -225,7 +225,7 @@ def download_episode(episode_id, pbar_stack: list | None = None) -> None:
             with Loader(PrintChannel.PROGRESS_INFO, "Applying metadata..."):
                 # For podcasts, genre isn't provided, so we'll just set it to "Podcast"
                 genres = ["Podcast"]
-                set_audio_tags(episode_path_codec, episode_metadata, total_discs=None, genres=genres, lyrics=None)
+                set_podcast_tags(episode_path_codec, episode_metadata, genres=genres)
                 if episode_metadata[IMAGE_URL]:
                     set_music_thumbnail(episode_path_codec, episode_metadata[IMAGE_URL], mode="podcast")
         except Exception as e:
