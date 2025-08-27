@@ -81,6 +81,7 @@ CONFIG_VALUES = {
     LYRICS_LOCATION:            { 'default': '',                        'type': str,    'arg': ('--lyrics-location'                      ,) },
     ALWAYS_CHECK_LYRICS:        { 'default': 'False',                   'type': bool,   'arg': ('--always-check-lyrics'                  ,) },
     LYRICS_MD_HEADER:           { 'default': 'False',                   'type': bool,   'arg': ('--lyrics-md-header'                     ,) },
+    SAVE_LYRICS_TO_FILE:            { 'default': 'False',                    'type': bool,   'arg': ('--save-lyrics-to-file'                      ,) },
     
     # Metadata Options
     LANGUAGE:                   { 'default': 'en',                      'type': str,    'arg': ('--language'                             ,) },
@@ -296,6 +297,10 @@ class Config:
     @classmethod
     def get_download_lyrics(cls) -> bool:
         return cls.get(DOWNLOAD_LYRICS)
+
+    @classmethod
+    def get_save_lyrics_to_file(cls) -> bool:
+        return cls.get(SAVE_LYRICS_TO_FILE)
     
     @classmethod
     def get_bulk_wait_time(cls) -> int:
