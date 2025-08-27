@@ -164,75 +164,202 @@ def conv_genre_format(genres: list[str]) -> list[str] | str:
         return Zotify.CONFIG.get_genre_delimiter().join(genres)
 
 
-def fix_year(track_path: str, release_date: str | None, release_year: str):
-    audio = File(track_path)
-    if not audio or not audio.tags:
-        return
-
-    if isinstance(audio.tags, ID3):
-        audio.tags.update_to_v23()
-    elif isinstance(audio.tags, VComment):
-        date = release_date or str(release_year)
-        year = date.split("-")[0]
-        audio["date"] = [date]
-        audio["year"] = [year]
-    else:
-        return
-
-    audio.save()
-
-
 def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str | None,
-                   genres: list[str], lyrics: list[str] | None) -> None:
-    """ sets music_tag metadata """
-
+                          genres: list[str], lyrics: list[str] | None) -> None:
+    """Sets metadata using pure mutagen"""
+    
     (scraped_track_id, track_name, artists, artist_ids, release_date, release_year,
      track_number, total_tracks, album, album_artists, disc_number, compilation,
      duration_ms, image_url, is_playable) = track_metadata.values()
-    ext = EXT_MAP[Zotify.CONFIG.get_download_format().lower()]
-
-    tags = music_tag.load_file(track_path)
-
-    # --- Reliable Tags ---
-    tags[ARTIST] = conv_artist_format(artists)
-    tags[GENRE] = conv_genre_format(genres)
-    tags[TRACKTITLE] = track_name
-    tags[ALBUM] = album
-    tags[ALBUMARTIST] = conv_artist_format(album_artists)
-    tags[DISCNUMBER] = disc_number
-    tags[TRACKNUMBER] = track_number
-
-    tags[YEAR] = release_year
-
-    # Unreliable Tags
-    if ext == "mp3":
-        tags.mfile.tags.add(TXXX(encoding=3, desc='TRACKID', text=[scraped_track_id]))
-    elif ext == "m4a":
-        freeform_set(tags, M4A_CUSTOM_TAG_PREFIX + "trackid",
-                     type('tag', (object,), {'values': [scraped_track_id]})())
+    
+    # Load the file
+    audio_file = File(str(track_path))
+    if not audio_file:
+        print(f"Could not load audio file: {track_path}")
+        return
+    
+    # Convert data to strings
+    artist_str = conv_artist_format(artists) if artists else ""
+    genre_str = conv_genre_format(genres) if genres else ""
+    album_artist_str = conv_artist_format(album_artists) if album_artists else ""
+    year_str = str(release_year) if release_year else ""
+    date_str = release_date if release_date else year_str
+    
+    if isinstance(audio_file, ID3) or hasattr(audio_file, 'tags') and isinstance(audio_file.tags, ID3):
+        # MP3 files with ID3 tags
+        if not audio_file.tags:
+            audio_file.add_tags()
+        
+        tags = audio_file.tags
+        tags.update_to_v23()
+        
+        # Basic tags
+        tags.add(TIT2(encoding=3, text=track_name))  # Title
+        tags.add(TPE1(encoding=3, text=artist_str))  # Artist
+        tags.add(TALB(encoding=3, text=album))       # Album
+        tags.add(TPE2(encoding=3, text=album_artist_str))  # Album Artist
+        tags.add(TCON(encoding=3, text=genre_str))   # Genre
+        
+        # Date/Year - using TDRC (Recording Date) which is more universal
+        if date_str:
+            tags.add(TDRC(encoding=3, text=date_str))
+        
+        # Track and disc numbers
+        if Zotify.CONFIG.get_disc_track_totals():
+            if total_tracks:
+                tags.add(TRCK(encoding=3, text=f"{track_number}/{total_tracks}"))
+            else:
+                tags.add(TRCK(encoding=3, text=str(track_number)))
+            
+            if total_discs and disc_number:
+                tags.add(TPOS(encoding=3, text=f"{disc_number}/{total_discs}"))
+            elif disc_number:
+                tags.add(TPOS(encoding=3, text=str(disc_number)))
+        else:
+            tags.add(TRCK(encoding=3, text=str(track_number)))
+            tags.add(TPOS(encoding=3, text=str(disc_number)))
+        
+        # Compilation
+        if compilation:
+            tags.add(TCMP(encoding=3, text="1"))
+        
+        # Custom track ID
+        tags.add(TXXX(encoding=3, desc='TRACKID', text=[scraped_track_id]))
+        
+        # Lyrics
+        if lyrics and Zotify.CONFIG.get_save_lyrics_tags():
+            lyrics_text = "".join(lyrics)
+            tags.add(USLT(encoding=3, lang='eng', desc='', text=lyrics_text))
+    
+    elif isinstance(audio_file, (OggVorbis, FLAC)) or (hasattr(audio_file, 'tags') and hasattr(audio_file.tags, '__setitem__')):
+        # OGG Vorbis, FLAC, or other Vorbis comment-based formats
+        if not audio_file.tags:
+            audio_file.add_tags()
+        
+        tags = audio_file.tags
+        
+        # Basic tags
+        tags['TITLE'] = [track_name]
+        tags['ARTIST'] = [artist_str] 
+        tags['ALBUM'] = [album]
+        tags['ALBUMARTIST'] = [album_artist_str]
+        tags['GENRE'] = [genre_str]
+        
+        # Date/Year
+        if date_str:
+            tags['DATE'] = [date_str]
+            # Also set YEAR for compatibility
+            year = date_str.split('-')[0] if '-' in date_str else date_str
+            tags['YEAR'] = [year]
+        
+        # Track and disc numbers
+        tags['TRACKNUMBER'] = [str(track_number)]
+        if total_tracks and Zotify.CONFIG.get_disc_track_totals():
+            tags['TRACKTOTAL'] = [str(total_tracks)]
+        
+        tags['DISCNUMBER'] = [str(disc_number)]
+        if total_discs and Zotify.CONFIG.get_disc_track_totals():
+            tags['DISCTOTAL'] = [str(total_discs)]
+        
+        # Compilation
+        if compilation:
+            tags['COMPILATION'] = ['1']
+        
+        # Custom track ID
+        tags['TRACKID'] = [scraped_track_id]
+        
+        # Lyrics
+        if lyrics and Zotify.CONFIG.get_save_lyrics_tags():
+            tags['LYRICS'] = ["".join(lyrics)]
+    
+    elif isinstance(audio_file, MP4):
+        # M4A/MP4 files
+        if not audio_file.tags:
+            audio_file.add_tags()
+        
+        tags = audio_file.tags
+        
+        # Basic tags
+        tags['\xa9nam'] = [track_name]      # Title
+        tags['\xa9ART'] = [artist_str]      # Artist
+        tags['\xa9alb'] = [album]           # Album
+        tags['aART'] = [album_artist_str]   # Album Artist
+        tags['\xa9gen'] = [genre_str]       # Genre
+        
+        # Date/Year
+        if date_str:
+            tags['\xa9day'] = [date_str]
+        
+        # Track and disc numbers
+        if total_tracks and Zotify.CONFIG.get_disc_track_totals():
+            tags['trkn'] = [(track_number, total_tracks)]
+        else:
+            tags['trkn'] = [(track_number, 0)]
+        
+        if total_discs and Zotify.CONFIG.get_disc_track_totals():
+            tags['disk'] = [(disc_number, total_discs)]
+        elif disc_number:
+            tags['disk'] = [(disc_number, 0)]
+        
+        # Compilation
+        if compilation:
+            tags['cpil'] = [True]
+        
+        # Custom track ID - using freeform atom
+        tags['----:com.apple.iTunes:TRACKID'] = [MP4FreeForm(scraped_track_id.encode('utf-8'))]
+        
+        # Lyrics
+        if lyrics and Zotify.CONFIG.get_save_lyrics_tags():
+            tags['\xa9lyr'] = ["".join(lyrics)]
+    
     else:
-        tags.tag_map["trackid"] = TAG_MAP_ENTRY(getter="trackid", setter="trackid", type=str)
-        tags["trackid"] = scraped_track_id
+        print(f"Unsupported file format: {type(audio_file)}")
+        return
+    
+    # Save the file
+    try:
+        audio_file.save()
+        print(f"Successfully tagged: {track_path}")
+    except Exception as e:
+        print(f"Error saving tags for {track_path}: {e}")
 
-    if Zotify.CONFIG.get_disc_track_totals():
-        tags[TOTALTRACKS] = total_tracks
-        if total_discs is not None:
-            tags[TOTALDISCS] = total_discs
 
-    if compilation:
-        tags[COMPILATION] = compilation
-
-    if lyrics and Zotify.CONFIG.get_save_lyrics_tags():
-        tags[LYRICS] = "".join(lyrics)
-
-    if ext == "mp3" and not Zotify.CONFIG.get_disc_track_totals():
-        # Bypass format X/Y
-        tags.set_raw("mp3", "TPOS", str(disc_number))
-        tags.set_raw("mp3", "TRCK", str(track_number))
-
-    tags.save()
-
-    fix_year(str(track_path), release_date, release_year)
+def fix_year(track_path: str, release_date: str | None, release_year: str):
+    """Improved year fixing function"""
+    audio = File(track_path)
+    if not audio:
+        return
+    
+    # Prepare date strings
+    date_str = release_date if release_date else str(release_year)
+    year_str = date_str.split("-")[0] if date_str else str(release_year)
+    
+    if isinstance(audio.tags, ID3):
+        # For MP3 files, use TDRC for date
+        audio.tags.update_to_v23()
+        if date_str:
+            audio.tags.add(TDRC(encoding=3, text=date_str))
+    
+    elif hasattr(audio.tags, '__setitem__'):  # Vorbis comments (OGG, FLAC)
+        if not audio.tags:
+            audio.add_tags()
+        # Set both DATE and YEAR for maximum compatibility
+        if date_str:
+            audio.tags['DATE'] = [date_str]
+        if year_str:
+            audio.tags['YEAR'] = [year_str]
+    
+    elif isinstance(audio, MP4):
+        # For M4A files
+        if not audio.tags:
+            audio.add_tags()
+        if date_str:
+            audio.tags['\xa9day'] = [date_str]
+    
+    try:
+        audio.save()
+    except Exception as e:
+        print(f"Error fixing year for {track_path}: {e}")
 
 
 def set_podcast_tags(episode_path: PurePath, episode_metadata: dict, genres: list[str]) -> None:
