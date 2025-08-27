@@ -126,17 +126,18 @@ def handle_lyrics(track_id: str, filedir: PurePath, track_metadata: dict) -> lis
             
             lyrics = get_track_lyrics(track_id)
             
-            lrc_header = [f"[ti: {track_metadata[NAME]}]\n",
-                          f"[ar: {conv_artist_format(track_metadata[ARTISTS], FORCE_NO_LIST=True)}]\n",
-                          f"[al: {track_metadata[ALBUM]}]\n",
-                          f"[length: {track_metadata[DURATION_MS] // 60000}:{(track_metadata[DURATION_MS] % 60000) // 1000}]\n",
-                          f"[by: Zotify v{__version__}]\n",
-                          "\n"]
-            
-            with open(lyricdir / f"{track_label}.lrc", 'w', encoding='utf-8') as file:
-                if Zotify.CONFIG.get_lyrics_header():
-                    file.writelines(lrc_header)
-                file.writelines(lyrics)
+            if Zotify.CONFIG.get_save_lyrics_to_file():
+                lrc_header = [f"[ti: {track_metadata[NAME]}]\n",
+                              f"[ar: {conv_artist_format(track_metadata[ARTISTS], FORCE_NO_LIST=True)}]\n",
+                              f"[al: {track_metadata[ALBUM]}]\n",
+                              f"[length: {track_metadata[DURATION_MS] // 60000}:{(track_metadata[DURATION_MS] % 60000) // 1000}]\n",
+                              f"[by: Fake Spotify Downloader]\n",
+                              "\n"]
+                
+                with open(lyricdir / f"{track_label}.lrc", 'w', encoding='utf-8') as file:
+                    if Zotify.CONFIG.get_lyrics_header():
+                        file.writelines(lrc_header)
+                    file.writelines(lyrics)
         
     except ValueError:
         Printer.hashtaged(PrintChannel.SKIPPING, f'LYRICS FOR "{track_label}" (LYRICS NOT AVAILABLE)')
