@@ -164,23 +164,35 @@ def conv_genre_format(genres: list[str]) -> list[str] | str:
 
 def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str | None, genres: list[str], lyrics: list[str] | None) -> None:
     """ sets music_tag metadata """
-    
+
     (scraped_track_id, track_name, artists, artist_ids, release_date, release_year, track_number, total_tracks,
      album, album_artists, disc_number, compilation, duration_ms, image_url, is_playable) = track_metadata.values()
     ext = EXT_MAP[Zotify.CONFIG.get_download_format().lower()]
-    
+
     tags = music_tag.load_file(track_path)
-    
+
     # Reliable Tags
     tags[ARTIST] = conv_artist_format(artists)
     tags[GENRE] = conv_genre_format(genres)
     tags[TRACKTITLE] = track_name
     tags[ALBUM] = album
     tags[ALBUMARTIST] = conv_artist_format(album_artists)
-    tags[YEAR] = release_year
+    str_date = release_date or str(release_year)
+
+    if ext == "mp3":
+        tags.set_raw("mp3", "TDRC", str_date)
+        tags.set_raw("mp3", "TYER", str_date)  # fallback
+    elif ext == "m4a":
+        freeform_set(tags, "©day", type('tag', (object,), {'values': [str_date]})())
+    elif ext == "ogg":
+        # ogg vorbis
+        tags.set_raw("vorbis", "DATE", str_date)
+    else:
+        tags[YEAR] = str_date  # fallback
+        
     tags[DISCNUMBER] = disc_number
     tags[TRACKNUMBER] = track_number
-    
+
     # Unreliable Tags
     if ext == "mp3":
         tags.mfile.tags.add(TXXX(encoding=3, desc='TRACKID', text=[scraped_track_id]))
@@ -189,24 +201,24 @@ def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str 
     else:
         tags.tag_map["trackid"] = TAG_MAP_ENTRY(getter="trackid", setter="trackid", type=str)
         tags["trackid"] = scraped_track_id
-    
+
     if Zotify.CONFIG.get_disc_track_totals():
         tags[TOTALTRACKS] = total_tracks
         if total_discs is not None:
             tags[TOTALDISCS] = total_discs
-    
+
     if compilation:
         tags[COMPILATION] = compilation
-    
+
     if lyrics and Zotify.CONFIG.get_save_lyrics_tags():
         tags[LYRICS] = "".join(lyrics)
-    
+
     if ext == "mp3" and not Zotify.CONFIG.get_disc_track_totals():
         # music_tag python library writes DISCNUMBER and TRACKNUMBER as X/Y instead of X for mp3
         # this method bypasses all internal formatting, probably not resilient against arbitrary inputs
         tags.set_raw("mp3", "TPOS", str(disc_number))
         tags.set_raw("mp3", "TRCK", str(track_number))
-    
+
     tags.save()
 
 
