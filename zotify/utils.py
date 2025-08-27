@@ -238,18 +238,21 @@ def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str 
 def set_podcast_tags(episode_path: PurePath, episode_metadata: dict, genres: list[str]) -> None:
     """ sets music_tag metadata specifically for podcasts """
     tags = music_tag.load_file(episode_path)
+    release_year = episode_metadata[YEAR]
 
     tags[TRACKTITLE] = episode_metadata[NAME]
     tags[ARTIST] = episode_metadata[SHOW]
     tags[ALBUM] = episode_metadata[SHOW]
     tags[ALBUMARTIST] = episode_metadata[SHOW]
-    tags[YEAR] = episode_metadata[YEAR]
+    tags[YEAR] = release_year
     tags[GENRE] = conv_genre_format(genres)
     
     if episode_metadata[DESCRIPTION]:
         tags[COMMENT] = episode_metadata[DESCRIPTION]
 
     tags.save()
+
+    fix_year(str(episode_path), None, release_year)
 
 
 def get_audio_tags(track_path: Path) -> tuple[tuple, tuple]:
