@@ -81,7 +81,7 @@ CONFIG_VALUES = {
     LYRICS_LOCATION:            { 'default': '',                        'type': str,    'arg': ('--lyrics-location'                      ,) },
     ALWAYS_CHECK_LYRICS:        { 'default': 'False',                   'type': bool,   'arg': ('--always-check-lyrics'                  ,) },
     LYRICS_MD_HEADER:           { 'default': 'False',                   'type': bool,   'arg': ('--lyrics-md-header'                     ,) },
-    SAVE_LYRICS_TO_FILE:        { 'default': 'False',                    'type': bool,   'arg': ('--save-lyrics-to-file'                      ,) },
+    SAVE_LYRICS_TO_FILE:        { 'default': 'False',                   'type': bool,   'arg': ('--save-lyrics-to-file'                  ,) },
     
     # Metadata Options
     LANGUAGE:                   { 'default': 'en',                      'type': str,    'arg': ('--language'                             ,) },
