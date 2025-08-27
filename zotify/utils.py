@@ -5,10 +5,12 @@ import subprocess
 import requests
 import music_tag
 from music_tag.file import TAG_MAP_ENTRY
-from music_tag.mp4 import freeform_set
-from mutagen.id3 import TXXX, ID3
+from music_tag.mp4 import freeform_set, MP4, MP4FreeForm
+from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TDRC, TRCK, TPOS, TCMP, USLT, TXXX
 from mutagen import File
 from mutagen._vorbis import VComment
+from mutagen.oggvorbis import OggVorbis
+from mutagen.flac import FLAC
 from time import sleep
 from pathlib import Path, PurePath
 
