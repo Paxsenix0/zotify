@@ -6,7 +6,9 @@ import requests
 import music_tag
 from music_tag.file import TAG_MAP_ENTRY
 from music_tag.mp4 import freeform_set
-from mutagen.id3 import TXXX
+from mutagen.id3 import TXXX, ID3
+from mutagen import File
+from mutagen._vorbis import VComment
 from time import sleep
 from pathlib import Path, PurePath
 
@@ -162,42 +164,52 @@ def conv_genre_format(genres: list[str]) -> list[str] | str:
         return Zotify.CONFIG.get_genre_delimiter().join(genres)
 
 
-def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str | None, genres: list[str], lyrics: list[str] | None) -> None:
+def fix_year(track_path: str, release_date: str | None, release_year: str):
+    audio = File(track_path)
+    if not audio or not audio.tags:
+        return
+
+    if isinstance(audio.tags, ID3):
+        audio.tags.update_to_v23()
+    elif isinstance(audio.tags, VComment):
+        date = release_date or str(release_year)
+        year = date.split("-")[0]
+        audio["date"] = [date]
+        audio["year"] = [year]
+    else:
+        return
+
+    audio.save()
+
+
+def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str | None,
+                   genres: list[str], lyrics: list[str] | None) -> None:
     """ sets music_tag metadata """
 
-    (scraped_track_id, track_name, artists, artist_ids, release_date, release_year, track_number, total_tracks,
-     album, album_artists, disc_number, compilation, duration_ms, image_url, is_playable) = track_metadata.values()
+    (scraped_track_id, track_name, artists, artist_ids, release_date, release_year,
+     track_number, total_tracks, album, album_artists, disc_number, compilation,
+     duration_ms, image_url, is_playable) = track_metadata.values()
     ext = EXT_MAP[Zotify.CONFIG.get_download_format().lower()]
 
     tags = music_tag.load_file(track_path)
 
-    # Reliable Tags
+    # --- Reliable Tags ---
     tags[ARTIST] = conv_artist_format(artists)
     tags[GENRE] = conv_genre_format(genres)
     tags[TRACKTITLE] = track_name
     tags[ALBUM] = album
     tags[ALBUMARTIST] = conv_artist_format(album_artists)
-    str_date = release_date or str(release_year)
-
-    if ext == "mp3":
-        tags.set_raw("mp3", "TDRC", str_date)
-        tags.set_raw("mp3", "TYER", str_date)  # fallback
-    elif ext == "m4a":
-        freeform_set(tags, "©day", type('tag', (object,), {'values': [str_date]})())
-    elif ext == "ogg":
-        # ogg vorbis
-        tags.set_raw("vorbis", "DATE", str_date)
-    else:
-        tags[YEAR] = str_date  # fallback
-        
     tags[DISCNUMBER] = disc_number
     tags[TRACKNUMBER] = track_number
+
+    tags[YEAR] = release_year
 
     # Unreliable Tags
     if ext == "mp3":
         tags.mfile.tags.add(TXXX(encoding=3, desc='TRACKID', text=[scraped_track_id]))
     elif ext == "m4a":
-        freeform_set(tags, M4A_CUSTOM_TAG_PREFIX + "trackid",  type('tag', (object,), {'values': [scraped_track_id]})())
+        freeform_set(tags, M4A_CUSTOM_TAG_PREFIX + "trackid",
+                     type('tag', (object,), {'values': [scraped_track_id]})())
     else:
         tags.tag_map["trackid"] = TAG_MAP_ENTRY(getter="trackid", setter="trackid", type=str)
         tags["trackid"] = scraped_track_id
@@ -214,12 +226,13 @@ def set_audio_tags(track_path: PurePath, track_metadata: dict, total_discs: str 
         tags[LYRICS] = "".join(lyrics)
 
     if ext == "mp3" and not Zotify.CONFIG.get_disc_track_totals():
-        # music_tag python library writes DISCNUMBER and TRACKNUMBER as X/Y instead of X for mp3
-        # this method bypasses all internal formatting, probably not resilient against arbitrary inputs
+        # Bypass format X/Y
         tags.set_raw("mp3", "TPOS", str(disc_number))
         tags.set_raw("mp3", "TRCK", str(track_number))
 
     tags.save()
+
+    fix_year(str(track_path), release_date, release_year)
 
 
 def set_podcast_tags(episode_path: PurePath, episode_metadata: dict, genres: list[str]) -> None:
