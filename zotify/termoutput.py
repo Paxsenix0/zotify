@@ -14,6 +14,7 @@ from mutagen import FileType
 from zotify.const import *
 import time
 from math import floor
+import sys
 
 class SimplePbar:
     def __init__(self, iterable=None, desc="", total=None, unit="it",
@@ -29,6 +30,7 @@ class SimplePbar:
         self.disable = disable
         self._done = False
 
+
     def update(self, step=1):
         if self.disable:
             return
@@ -39,16 +41,22 @@ class SimplePbar:
         eta = (self.total - self.n) / rate if rate > 0 else float("inf")
 
         line = f"{self.desc}: {floor(percent)}% | {self.n}/{self.total} {self.unit} | {elapsed:0.1f}s elapsed | ETA {eta:0.1f}s"
-        tqdm.write(line)
+
+        if sys.stdout.isatty():
+            tqdm.write(line.ljust(Printer._term_cols()), end="\r")
+        else:
+            tqdm.write(line)
 
     def refresh(self):
-        # no-op, but keeps compatibility
         pass
 
     def close(self):
         if not self._done and not self.disable:
             line = f"{self.desc}: 100% | {self.total}/{self.total} {self.unit} | Done!"
-            tqdm.write(line)
+            if sys.stdout.isatty():
+                tqdm.write(line.ljust(Printer._term_cols()))
+            else:
+                tqdm.write(line)
             self._done = True
 
     def __iter__(self):
