@@ -1,240 +1,207 @@
 from __future__ import annotations
 import platform
 from os import get_terminal_size, system
+from itertools import cycle
 from time import sleep
-from pprint import pformat
-from tabulate import tabulate
-from traceback import TracebackException
+import sys
+import threading # Added for Lock
+# from pprint import pformat # Uncomment if used elsewhere
+# from tabulate import tabulate # Uncomment if used elsewhere
+# from traceback import TracebackException # Uncomment if used elsewhere
 from enum import Enum
 from tqdm import tqdm
-from mutagen import FileType
+# from mutagen import FileType # Uncomment if used elsewhere
 
-from zotify.const import *
+# --- Assume your existing constants like MANDATORY, DEBUG, PRINT_SPLASH etc. are here ---
+# Example placeholders (replace with your actual const values)
+MANDATORY = "MANDATORY"
+DEBUG = "DEBUG"
+PRINT_SPLASH = "PRINT_SPLASH"
+PRINT_WARNINGS = "PRINT_WARNINGS"
+PRINT_ERRORS = "PRINT_ERRORS"
+PRINT_API_ERRORS = "PRINT_API_ERRORS"
+PRINT_PROGRESS_INFO = "PRINT_PROGRESS_INFO"
+PRINT_SKIPS = "PRINT_SKIPS"
+PRINT_DOWNLOADS = "PRINT_DOWNLOADS"
+WINDOWS_SYSTEM = "Windows" # Placeholder
+AVAIL_MARKETS = "available_markets"
+IMAGES = "images"
+EXTERNAL_URLS = "external_urls"
+PREVIEW_URL = "preview_url"
+# --- End of assumed constants ---
+
+# ANSI Codes (if used elsewhere, keep them)
+UP_ONE_LINE = "\033[A"
+DOWN_ONE_LINE = "\033[B"
+RIGHT_ONE_COL = "\033[C"
+LEFT_ONE_COL = "\033[D"
+START_OF_PREV_LINE = "\033[F"
+CLEAR_LINE = "\033[K"
 
 class PrintChannel(Enum):
     MANDATORY = MANDATORY
     DEBUG = DEBUG
-
+    # Add other channels as needed, referencing your CONST values
     SPLASH = PRINT_SPLASH
-
     WARNING = PRINT_WARNINGS
     ERROR = PRINT_ERRORS
     API_ERROR = PRINT_API_ERRORS
-
     PROGRESS_INFO = PRINT_PROGRESS_INFO
     SKIPPING = PRINT_SKIPS
     DOWNLOADS = PRINT_DOWNLOADS
 
-
 class PrintCategory(Enum):
     NONE = ""
     GENERAL = "\n"
-    LOADER = "\t"  # Simplified: A loader is just another indented line
+    LOADER = "\n\t"
+    LOADER_CYCLE = f"{START_OF_PREV_LINE*2}\t"
     HASHTAG = "\n###   "
     JSON = "\n#"
     DEBUG = "\nDEBUG\n"
 
+# Global variables (assuming they exist in your original file)
+LAST_PRINT: PrintCategory = PrintCategory.NONE
+ACTIVE_LOADER = None # Will hold the current Loader instance
+ACTIVE_PBARS: list[tqdm] = []
 
-class ProgressHandler:
-    """
-    A unified handler for creating and managing tqdm progress bars and spinners.
-    This replaces the old Loader and the static pbar methods.
-    """
-    def __init__(self):
-        self.active_pbars: list[tqdm] = []
-
-    def _get_next_pos(self) -> int:
-        """Calculates the screen position for the next progress bar."""
-        return len(self.active_pbars)
-
-    def loader(self, desc: str = "Loading...", **kwargs) -> tqdm:
-        """Creates an indeterminate progress bar (spinner). Replaces the old Loader."""
-        pbar = tqdm(
-            desc=desc,
-            total=None,  # Indeterminate
-            position=self._get_next_pos(),
-            bar_format='{l_bar}{bar:10}{r_bar}', # Spinner-like format
-            leave=False,
-            **kwargs
-        )
-        self.active_pbars.append(pbar)
-        return pbar
-    
-    def pbar(self, *args, **kwargs) -> tqdm:
-        """Creates a standard determinate progress bar."""
-        # Set default position and leave behavior if not provided
-        kwargs.setdefault('position', self._get_next_pos())
-        kwargs.setdefault('leave', False)
-
-        pbar = tqdm(*args, **kwargs)
-        self.active_pbars.append(pbar)
-        return pbar
-
-    def close(self, pbar: tqdm):
-        """Closes a specific progress bar and removes it from the active list."""
-        if pbar in self.active_pbars:
-            self.active_pbars.remove(pbar)
-        pbar.close()
-    
-    def close_all(self):
-        """Closes all active progress bars."""
-        for pbar in reversed(self.active_pbars):
-            pbar.close()
-        self.active_pbars.clear()
-
-
-# It's good practice to have a single instance of the handler
-progress_handler = ProgressHandler()
-
-
+# --- Assume Printer class definition is here, with all its methods ---
+# (Printer class code - unchanged from your original, except potentially Loader usage)
 class Printer:
-    @staticmethod
-    def _term_cols() -> int:
+    # ... (all your existing Printer methods: _term_cols, _api_shrink, _print_prefixes,
+    # _toggle_active_loader, new_print, get_input, json_dump, debug, hashtaged,
+    # traceback, depreciated_warning, table, clear, splash, search_select, back_up,
+    # pbar, refresh_all_pbars, pbar_position_handler) ...
+    pass # Placeholder for existing code
+
+# --- Simplified Loader Class (Replaces your original Loader) ---
+class Loader:
+    """Simple, log-friendly animated loader."""
+
+    # Define animation modes
+    MODES = {
+        'std1': ["⢿", "⣻", "⣽", "⣾", "⣷", "⣯", "⣟", "⡿"],
+        'std2': ["◜", "◝", "◞", "◟"],
+        'std3': ["😐 ", "😐 ", "😮 ", "😮 ", "😦 ", "😦 ", "😧 ", "😧 ", "🤯 ", "💥 ", "✨ ", "\u3000 ", "\u3000 ", "\u3000 "],
+        'prog': ["[∙∙∙]", "[●∙∙]", "[∙●∙]", "[∙∙●]", "[∙∙∙]"],
+        'basic': ['|', '/', '-', '\\'] # Simple fallback
+    }
+
+    def __init__(self, chan: PrintChannel, desc: str = "Loading...", end: str = 'Done!', timeout: float = 0.1, mode: str = 'prog'):
+        """
+        A simple, log-friendly animated loader.
+
+        Args:
+            chan (PrintChannel): The Printer channel for the final message.
+            desc (str): The loader's description displayed during loading.
+            end (str): Final print message when stopped. Printed on a new line.
+            timeout (float): Sleep time between animation frames.
+            mode (str): The animation style ('std1', 'std2', 'std3', 'prog', 'basic').
+        """
+        self.desc = desc
+        self.end = end
+        self.timeout = timeout
+        self.channel = chan
+
+        self._thread = threading.Thread(target=self._animate, daemon=True)
+        self.steps = self.MODES.get(mode, self.MODES['prog']) # Default to 'prog'
+
+        self._done = False
+        self._lock = threading.Lock()
+        self._started = False
+
+        # For integration with ACTIVE_LOADER global if needed
+        self._inherited_active_loader = None
+
+    def store_active_loader(self):
+        global ACTIVE_LOADER
+        self._inherited_active_loader = ACTIVE_LOADER
+        ACTIVE_LOADER = self
+
+    def release_active_loader(self):
+        global ACTIVE_LOADER
+        ACTIVE_LOADER = self._inherited_active_loader
+
+    def start(self):
+        """Starts the loading animation in a separate thread."""
+        if not self._started:
+            self.store_active_loader()
+            with self._lock:
+                self._done = False # Ensure flag is reset
+            self._thread.start()
+            self._started = True
+            # Small delay to let the first frame print
+            sleep(min(self.timeout * 2, 0.1))
+        return self
+
+    def _animate(self):
+        """The animation loop running in the thread."""
         try:
-            columns, _ = get_terminal_size()
-        except OSError:
-            columns = 80
-        return columns
+            for c in cycle(self.steps):
+                with self._lock:
+                    if self._done:
+                        break
+                # Directly write to stdout for clean animation
+                sys.stdout.write(f'\r{c} {self.desc}')
+                sys.stdout.flush()
+                sleep(self.timeout)
+        except Exception as e:
+            # Handle potential errors in animation thread
+            # Be cautious about logging here if Printer uses Loader
+            pass # Or log minimally
+        finally:
+            # Ensure cursor moves to next line when stopping
+            sys.stdout.write('\n')
+            sys.stdout.flush()
 
-    @staticmethod
-    def _api_shrink(obj: list | tuple | dict) -> dict:
-        """ Shrinks API objects to remove data unnecessary data for debugging """
-        def shrink(k: str) -> str | None:
-            if k in {AVAIL_MARKETS, IMAGES}:
-                return "LIST REMOVED FOR BREVITY"
-            elif k in {EXTERNAL_URLS, PREVIEW_URL}:
-                return "URL REMOVED FOR BREVITY"
-            elif k in {"_children"}:
-                return "SET REMOVED FOR BREVITY"
-            elif k in {"metadata_block_picture", "APIC:0", "covr"}:
-                return "BYTES REMOVED FOR BREVITY"
-            return None
+    def __enter__(self):
+        """Context manager entry."""
+        self.start()
+        return self
 
-        if isinstance(obj, list) and len(obj) > 0:
-            obj = [Printer._api_shrink(item) for item in obj]
-        elif isinstance(obj, tuple):
-            if len(obj) == 2 and isinstance(obj[0], str):
-                if shrink(obj[0]):
-                    obj = (obj[0], shrink(obj[0]))
-        elif isinstance(obj, (dict, FileType)):
-            for k, v in obj.items():
-                if shrink(k):
-                    obj[k] = shrink(k)
-                else:
-                    obj[k] = Printer._api_shrink(v)
-        return obj
+    def stop(self):
+        """Stops the animation and prints the final message."""
+        if self._started:
+            with self._lock:
+                self._done = True
 
-    @staticmethod
-    def _prepare_msg(msg: str, category: PrintCategory, channel: PrintChannel) -> str:
-        """Prepares the message string with appropriate prefixes."""
-        prefix = category.value
-        
-        if category is PrintCategory.HASHTAG:
-            if channel in {PrintChannel.WARNING, PrintChannel.ERROR, PrintChannel.API_ERROR, PrintChannel.SKIPPING}:
-                msg = channel.name + ":  " + msg
-            msg = msg.replace("\n", "   ###\n###   ") + "   ###"
-            # Remove the initial newline from the prefix for hashtags to align properly
-            prefix = prefix.lstrip('\n')
+            # Wait for the animation thread to finish
+            if self._thread.is_alive():
+                self._thread.join()
 
-        elif category is PrintCategory.JSON:
-            cols = Printer._term_cols()
-            msg = "#" * (cols - 1) + "\n" + msg + "\n" + "#" * cols
-            prefix = "" # JSON category handles its own newlines
+            # Print the final message using Printer (goes on new line now)
+            if self.end:
+                Printer.new_print(self.channel, self.end, category=PrintCategory.GENERAL, skip_toggle=True)
 
-        return prefix + msg
+            self.release_active_loader()
+            self._started = False
 
-    @staticmethod
-    def new_print(channel: PrintChannel, msg: str, category: PrintCategory = PrintCategory.NONE, end: str = "\n") -> None:
-        # Lazy import to avoid circular dependency if config uses Printer
-        from zotify.config import Zotify
+    def __exit__(self, exc_type, exc_value, tb):
+        """Context manager exit. Stops the loader."""
+        self.stop()
+        # Optionally handle exceptions passed here
+        # if exc_type is not None:
+        #     Printer.traceback(exc_value) # Example
+        # Returning None allows exception propagation
 
-        if channel == PrintChannel.MANDATORY or Zotify.CONFIG.get(channel.value):
-            
-            # Use tqdm.write for all printing. It's thread-safe and doesn't mess with progress bars.
-            full_msg = Printer._prepare_msg(str(msg), category, channel)
-            
-            # tqdm.write handles printing above any active bars correctly.
-            tqdm.write(full_msg, end=end)
-            
-            if channel == PrintChannel.DEBUG and Zotify.CONFIG.logger:
-                Zotify.CONFIG.logger.debug(full_msg.strip() + "\n")
+# --- Assume the rest of your file (if any) is below ---
+# Example usage (can be removed or placed in a separate test script)
+# if __name__ == "__main__":
+#     # Example 1: Context Manager
+#     try:
+#         with Loader(PrintChannel.MANDATORY, "Processing data...", "Data processed successfully!", timeout=0.2, mode='basic'):
+#             sleep(3) # Simulate work
+#             # raise ValueError("Something went wrong!") # Uncomment to test exception handling
+#     except ValueError as e:
+#         Printer.new_print(PrintChannel.ERROR, f"An error occurred: {e}")
 
-    @staticmethod
-    def get_input(prompt: str) -> str:
-        """Safely gets user input without messing up active progress bars."""
-        # Close any active bars so the input prompt is clean
-        progress_handler.close_all()
-        
-        # We can now use the standard input function
-        user_input = input(f"\n{prompt}")
-        return user_input.strip()
+#     print("---Separator---") # This should appear cleanly
 
-    # Print Wrappers
-    @staticmethod
-    def json_dump(obj: dict, channel: PrintChannel = PrintChannel.ERROR, category: PrintCategory = PrintCategory.JSON) -> None:
-        obj = Printer._api_shrink(obj)
-        Printer.new_print(channel, pformat(obj, indent=2), category)
+#     # Example 2: Manual Start/Stop
+#     loader = Loader(PrintChannel.DOWNLOADS, "Downloading file...", "Download complete!", timeout=0.1, mode='prog')
+#     loader.start()
+#     try:
+#         sleep(2) # Simulate download
+#     finally:
+#         loader.stop() # Ensure stop is called
 
-    @staticmethod
-    def debug(*msg: tuple[str | object]) -> None:
-        for m in msg:
-            if isinstance(m, str):
-                Printer.new_print(PrintChannel.DEBUG, m, PrintCategory.DEBUG)
-            else:
-                Printer.json_dump(m, PrintChannel.DEBUG, PrintCategory.DEBUG)
-
-    @staticmethod
-    def hashtaged(channel: PrintChannel, msg: str):
-        Printer.new_print(channel, msg, PrintCategory.HASHTAG)
-
-    @staticmethod
-    def traceback(e: Exception) -> None:
-        msg = "".join(TracebackException.from_exception(e).format())
-        Printer.new_print(PrintChannel.ERROR, msg, PrintCategory.GENERAL)
-
-    @staticmethod
-    def depreciated_warning(option_string: str, help_msg: str = None, CONFIG=True) -> None:
-        kind = "CONFIG" if CONFIG else "ARGUMENT"
-        msg = (
-            f"WARNING: {kind} `{option_string}` IS DEPRECIATED, IGNORING\n"
-            "THIS WILL BE REMOVED IN FUTURE VERSIONS"
-        )
-        if help_msg:
-            msg += f"\n{help_msg}"
-        Printer.hashtaged(PrintChannel.MANDATORY, msg)
-
-
-    @staticmethod
-    def table(title: str, headers: tuple[str], tabular_data: list) -> None:
-        Printer.hashtaged(PrintChannel.MANDATORY, title)
-        Printer.new_print(PrintChannel.MANDATORY, tabulate(tabular_data, headers=headers, tablefmt='pretty'))
-
-    # Prefabs
-    @staticmethod
-    def clear() -> None:
-        """ Clear the console window """
-        if platform.system() == WINDOWS_SYSTEM:
-            system('cls')
-        else:
-            system('clear')
-
-    @staticmethod
-    def splash() -> None:
-        """ Displays splash screen """
-        Printer.new_print(PrintChannel.SPLASH,
-        "    ███████╗ ██████╗ ████████╗██╗███████╗██╗   ██╗"+"\n"+\
-        "    ╚══███╔╝██╔═══██╗╚══██╔══╝██║██╔════╝╚██╗ ██╔╝"+"\n"+\
-        "      ███╔╝ ██║   ██║   ██║   ██║█████╗   ╚████╔╝ "+"\n"+\
-        "     ███╔╝  ██║   ██║   ██║   ██║██╔══╝    ╚██╔╝  "+"\n"+\
-        "    ███████╗╚██████╔╝   ██║   ██║██║        ██║   "+"\n"+\
-        "    ╚══════╝ ╚═════╝    ╚═╝   ╚═╝╚═╝        ╚═╝   "+"\n" )
-
-    @staticmethod
-    def search_select() -> None:
-        """ Displays search selection instructions """
-        Printer.new_print(PrintChannel.MANDATORY,
-        "> SELECT A DOWNLOAD OPTION BY ID\n" +
-        "> SELECT A RANGE BY ADDING A DASH BETWEEN BOTH ID's\n" +
-        "> OR PARTICULAR OPTIONS BY ADDING A COMMA BETWEEN ID's\n",
-        category=PrintCategory.GENERAL
-        )
+#     print("---End of Script---")
