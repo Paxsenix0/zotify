@@ -42,7 +42,7 @@ class SimplePbar:
         tqdm.write(line)
 
     def refresh(self):
-        # no-op, but keep API compatibility
+        # no-op, but keeps compatibility
         pass
 
     def close(self):
@@ -57,6 +57,12 @@ class SimplePbar:
         for item in self.iterable:
             yield item
             self.update()
+        self.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
 UP_ONE_LINE = "\033[A"
