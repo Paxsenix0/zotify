@@ -12,9 +12,9 @@ from tqdm import tqdm
 from mutagen import FileType
 
 from zotify.const import *
+import sys
 import time
 from math import floor
-import sys
 
 class SimplePbar:
     def __init__(self, iterable=None, desc="", total=None, unit="it",
@@ -24,31 +24,51 @@ class SimplePbar:
         self.total = total if total is not None else (len(iterable) if iterable is not None else 0)
         self.n = 0
         self.start_time = time.time()
-        self.desc = desc
+        self.desc = desc or ""
         self.unit = unit
         self.pos = position
         self.disable = disable
         self._done = False
+        self._postfix = ""
 
+    def set_description(self, desc: str, refresh: bool = True):
+        """Mimic tqdm.set_description"""
+        self.desc = desc
+        if refresh:
+            self.refresh()
+
+    def set_postfix(self, postfix: dict | str, refresh: bool = True):
+        """Mimic tqdm.set_postfix"""
+        if isinstance(postfix, dict):
+            self._postfix = " | " + " ".join(f"{k}={v}" for k, v in postfix.items())
+        else:
+            self._postfix = " | " + str(postfix)
+        if refresh:
+            self.refresh()
 
     def update(self, step=1):
         if self.disable:
             return
         self.n += step
+        self.refresh()
+
+    def refresh(self):
+        if self.disable:
+            return
         elapsed = time.time() - self.start_time
         rate = self.n / elapsed if elapsed > 0 else 0
         percent = (self.n / self.total) * 100 if self.total else 0
         eta = (self.total - self.n) / rate if rate > 0 else float("inf")
 
-        line = f"{self.desc}: {floor(percent)}% | {self.n}/{self.total} {self.unit} | {elapsed:0.1f}s elapsed | ETA {eta:0.1f}s"
+        line = (
+            f"{self.desc}: {floor(percent)}% | {self.n}/{self.total} {self.unit} "
+            f"| {elapsed:0.1f}s elapsed | ETA {eta:0.1f}s{self._postfix}"
+        )
 
-        if sys.stdout.isatty():
-            tqdm.write(line.ljust(Printer._term_cols()), end="\r")
-        else:
-            tqdm.write(line)
-
-    def refresh(self):
-        pass
+        # if sys.stdout.isatty():
+        tqdm.write(line.ljust(Printer._term_cols()), end="\r")
+        # else:
+        #     tqdm.write(line)
 
     def close(self):
         if not self._done and not self.disable:
