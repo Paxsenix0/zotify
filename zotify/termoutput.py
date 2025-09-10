@@ -12,7 +12,31 @@ from tqdm import tqdm
 from mutagen import FileType
 
 from zotify.const import *
+import time
+from math import floor
 
+class SimplePbar:
+    def __init__(self, total, desc="", unit="it"):
+        self.total = total
+        self.n = 0
+        self.start_time = time.time()
+        self.desc = desc
+        self.unit = unit
+
+    def update(self, step=1):
+        self.n += step
+        elapsed = time.time() - self.start_time
+        rate = self.n / elapsed if elapsed > 0 else 0
+        percent = (self.n / self.total) * 100 if self.total else 0
+        eta = (self.total - self.n) / rate if rate > 0 else float("inf")
+
+        # Simple one-line update (✅ regex-friendly)
+        line = f"{self.desc}: {floor(percent)}% | {self.n}/{self.total} {self.unit} | {elapsed:0.1f}s elapsed | ETA {eta:0.1f}s"
+        tqdm.write(line)  # use tqdm.write to not break logs
+
+    def close(self):
+        line = f"{self.desc}: 100% | {self.total}/{self.total} {self.unit} | Done!"
+        tqdm.write(line)
 
 UP_ONE_LINE = "\033[A"
 DOWN_ONE_LINE = "\033[B"
@@ -225,15 +249,17 @@ class Printer:
 
     # Progress Bars
     @staticmethod
-    def pbar(iterable=None, desc=None, total=None, unit='it', 
-            disable=False, unit_scale=False, unit_divisor=1000, pos=1) -> tqdm:
-        if iterable and len(iterable) == 1 and len(ACTIVE_PBARS) > 0:
-            disable = True # minimize clutter
-        new_pbar = tqdm(iterable=iterable, desc=desc, total=total, disable=disable, position=pos, 
-                        unit=unit, unit_scale=unit_scale, unit_divisor=unit_divisor, leave=False)
-        if new_pbar.disable: new_pbar.pos = -pos
-        if not new_pbar.disable: ACTIVE_PBARS.append(new_pbar)
-        return new_pbar
+    def pbar(iterable=None, desc=None, total=None, unit='it',
+         disable=False, unit_scale=False, unit_divisor=1000, pos=1):
+        # if iterable is provided, wrap it
+        if iterable is not None:
+            pbar = SimplePbar(len(iterable), desc=desc or "", unit=unit)
+            for item in iterable:
+                yield item
+                pbar.update()
+            pbar.close()
+        else:
+            return SimplePbar(total=total, desc=desc or "", unit=unit)
 
     @staticmethod
     def refresh_all_pbars(pbar_stack: list[tqdm] | None, skip_pop: bool = False) -> None:
