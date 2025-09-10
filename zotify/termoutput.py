@@ -1,8 +1,7 @@
 from __future__ import annotations
-import logging
 import platform
-import sys
 from os import get_terminal_size, system
+from time import sleep
 from pprint import pformat
 from tabulate import tabulate
 from traceback import TracebackException
@@ -11,29 +10,6 @@ from tqdm import tqdm
 from mutagen import FileType
 
 from zotify.const import *
-
-# --- Logger Setup (Do this once at the start of your application) ---
-
-# Get a logger instance
-log = logging.getLogger('zotify')
-
-def setup_logger(level=logging.INFO):
-    """Configures the root logger for clean, simple output."""
-    log.setLevel(level)
-    
-    # Avoid adding handlers if they already exist
-    if log.hasHandlers():
-        log.handlers.clear()
-
-    handler = logging.StreamHandler(sys.stdout)
-    
-    # This formatter is simple and perfect for regex
-    formatter = logging.Formatter('[%(levelname)s] %(message)s')
-    
-    handler.setFormatter(formatter)
-    log.addHandler(handler)
-
-# --- Enums (Unchanged, as requested) ---
 
 class PrintChannel(Enum):
     MANDATORY = MANDATORY
@@ -50,22 +26,68 @@ class PrintChannel(Enum):
     DOWNLOADS = PRINT_DOWNLOADS
 
 
-# --- Core Logger Class (Replaces Printer) ---
+class PrintCategory(Enum):
+    NONE = ""
+    GENERAL = "\n"
+    LOADER = "\t"  # Simplified: A loader is just another indented line
+    HASHTAG = "\n###   "
+    JSON = "\n#"
+    DEBUG = "\nDEBUG\n"
 
-class Logger:
-    # A dictionary to map your channels to standard logging levels
-    CHANNEL_LEVEL_MAP = {
-        PrintChannel.MANDATORY: logging.INFO,
-        PrintChannel.SPLASH: logging.INFO,
-        Print_Channel.PROGRESS_INFO: logging.INFO,
-        PrintChannel.SKIPPING: logging.INFO,
-        PrintChannel.DOWNLOADS: logging.INFO,
-        PrintChannel.DEBUG: logging.DEBUG,
-        PrintChannel.WARNING: logging.WARNING,
-        PrintChannel.ERROR: logging.ERROR,
-        PrintChannel.API_ERROR: logging.ERROR,
-    }
 
+class ProgressHandler:
+    """
+    A unified handler for creating and managing tqdm progress bars and spinners.
+    This replaces the old Loader and the static pbar methods.
+    """
+    def __init__(self):
+        self.active_pbars: list[tqdm] = []
+
+    def _get_next_pos(self) -> int:
+        """Calculates the screen position for the next progress bar."""
+        return len(self.active_pbars)
+
+    def loader(self, desc: str = "Loading...", **kwargs) -> tqdm:
+        """Creates an indeterminate progress bar (spinner). Replaces the old Loader."""
+        pbar = tqdm(
+            desc=desc,
+            total=None,  # Indeterminate
+            position=self._get_next_pos(),
+            bar_format='{l_bar}{bar:10}{r_bar}', # Spinner-like format
+            leave=False,
+            **kwargs
+        )
+        self.active_pbars.append(pbar)
+        return pbar
+    
+    def pbar(self, *args, **kwargs) -> tqdm:
+        """Creates a standard determinate progress bar."""
+        # Set default position and leave behavior if not provided
+        kwargs.setdefault('position', self._get_next_pos())
+        kwargs.setdefault('leave', False)
+
+        pbar = tqdm(*args, **kwargs)
+        self.active_pbars.append(pbar)
+        return pbar
+
+    def close(self, pbar: tqdm):
+        """Closes a specific progress bar and removes it from the active list."""
+        if pbar in self.active_pbars:
+            self.active_pbars.remove(pbar)
+        pbar.close()
+    
+    def close_all(self):
+        """Closes all active progress bars."""
+        for pbar in reversed(self.active_pbars):
+            pbar.close()
+        self.active_pbars.clear()
+
+
+# It's good practice to have a single instance of the handler
+progress_handler = ProgressHandler()
+
+
+class Printer:
     @staticmethod
     def _term_cols() -> int:
         try:
@@ -76,178 +98,143 @@ class Logger:
 
     @staticmethod
     def _api_shrink(obj: list | tuple | dict) -> dict:
-        """ Shrinks API objects to remove data unnecessary data for debugging. (Unchanged) """
+        """ Shrinks API objects to remove data unnecessary data for debugging """
         def shrink(k: str) -> str | None:
             if k in {AVAIL_MARKETS, IMAGES}:
                 return "LIST REMOVED FOR BREVITY"
-            if k in {EXTERNAL_URLS, PREVIEW_URL}:
+            elif k in {EXTERNAL_URLS, PREVIEW_URL}:
                 return "URL REMOVED FOR BREVITY"
-            if k in {"_children"}:
+            elif k in {"_children"}:
                 return "SET REMOVED FOR BREVITY"
-            if k in {"metadata_block_picture", "APIC:0", "covr"}:
+            elif k in {"metadata_block_picture", "APIC:0", "covr"}:
                 return "BYTES REMOVED FOR BREVITY"
             return None
 
-        if isinstance(obj, list):
-            obj = [Logger._api_shrink(item) for item in obj]
+        if isinstance(obj, list) and len(obj) > 0:
+            obj = [Printer._api_shrink(item) for item in obj]
         elif isinstance(obj, tuple):
             if len(obj) == 2 and isinstance(obj[0], str):
-                shrunk_val = shrink(obj[0])
-                if shrunk_val:
-                    obj = (obj[0], shrunk_val)
+                if shrink(obj[0]):
+                    obj = (obj[0], shrink(obj[0]))
         elif isinstance(obj, (dict, FileType)):
             for k, v in obj.items():
-                shrunk_val = shrink(k)
-                if shrunk_val:
-                    obj[k] = shrunk_val
+                if shrink(k):
+                    obj[k] = shrink(k)
                 else:
-                    obj[k] = Logger._api_shrink(v)
+                    obj[k] = Printer._api_shrink(v)
         return obj
 
     @staticmethod
-    def new_print(channel: PrintChannel, msg: str) -> None:
-        """The core logging function. Maps a channel to a log level and logs the message."""
-        # This check should be done before calling this function
-        # from zotify.config import Zotify
-        # if channel != PrintChannel.MANDATORY and not Zotify.CONFIG.get(channel.value):
-        #     return
+    def _prepare_msg(msg: str, category: PrintCategory, channel: PrintChannel) -> str:
+        """Prepares the message string with appropriate prefixes."""
+        prefix = category.value
+        
+        if category is PrintCategory.HASHTAG:
+            if channel in {PrintChannel.WARNING, PrintChannel.ERROR, PrintChannel.API_ERROR, PrintChannel.SKIPPING}:
+                msg = channel.name + ":  " + msg
+            msg = msg.replace("\n", "   ###\n###   ") + "   ###"
+            # Remove the initial newline from the prefix for hashtags to align properly
+            prefix = prefix.lstrip('\n')
+
+        elif category is PrintCategory.JSON:
+            cols = Printer._term_cols()
+            msg = "#" * (cols - 1) + "\n" + msg + "\n" + "#" * cols
+            prefix = "" # JSON category handles its own newlines
+
+        return prefix + msg
+
+    @staticmethod
+    def new_print(channel: PrintChannel, msg: str, category: PrintCategory = PrintCategory.NONE, end: str = "\n") -> None:
+        # Lazy import to avoid circular dependency if config uses Printer
+        from zotify.config import Zotify
+
+        if channel == PrintChannel.MANDATORY or Zotify.CONFIG.get(channel.value):
             
-        log_level = Logger.CHANNEL_LEVEL_MAP.get(channel, logging.INFO)
-        log.log(log_level, msg)
+            # Use tqdm.write for all printing. It's thread-safe and doesn't mess with progress bars.
+            full_msg = Printer._prepare_msg(str(msg), category, channel)
+            
+            # tqdm.write handles printing above any active bars correctly.
+            tqdm.write(full_msg, end=end)
+            
+            if channel == PrintChannel.DEBUG and Zotify.CONFIG.logger:
+                Zotify.CONFIG.logger.debug(full_msg.strip() + "\n")
 
     @staticmethod
     def get_input(prompt: str) -> str:
-        """
-        Gets user input. Bypasses the logger for the prompt to ensure clean interaction.
-        """
-        # We write directly to stdout to avoid the '[INFO]' prefix on the prompt
-        sys.stdout.write(prompt)
-        sys.stdout.flush()
-        return input()
+        """Safely gets user input without messing up active progress bars."""
+        # Close any active bars so the input prompt is clean
+        progress_handler.close_all()
+        
+        # We can now use the standard input function
+        user_input = input(f"\n{prompt}")
+        return user_input.strip()
 
-    # --- Print Wrappers (Adapted for the new logger) ---
+    # Print Wrappers
+    @staticmethod
+    def json_dump(obj: dict, channel: PrintChannel = PrintChannel.ERROR, category: PrintCategory = PrintCategory.JSON) -> None:
+        obj = Printer._api_shrink(obj)
+        Printer.new_print(channel, pformat(obj, indent=2), category)
 
     @staticmethod
-    def json_dump(obj: dict, channel: PrintChannel = PrintChannel.ERROR) -> None:
-        """Logs a pretty-printed, shrunken dictionary."""
-        shrunken_obj = Logger._api_shrink(obj)
-        formatted_str = pformat(shrunken_obj, indent=2)
-        # Add a border for clarity in logs
-        msg = f"JSON DUMP START\n{'-'*40}\n{formatted_str}\n{'-'*40}\nJSON DUMP END"
-        Logger.new_print(channel, msg)
-
-    @staticmethod
-    def debug(*msg: str | object) -> None:
-        """Logs any number of messages or objects at the DEBUG level."""
+    def debug(*msg: tuple[str | object]) -> None:
         for m in msg:
             if isinstance(m, str):
-                Logger.new_print(PrintChannel.DEBUG, m)
+                Printer.new_print(PrintChannel.DEBUG, m, PrintCategory.DEBUG)
             else:
-                Logger.json_dump(m, PrintChannel.DEBUG)
+                Printer.json_dump(m, PrintChannel.DEBUG, PrintCategory.DEBUG)
 
     @staticmethod
     def hashtaged(channel: PrintChannel, msg: str):
-        """Logs a message prefixed with hashtags for emphasis."""
-        # Multi-line hashtags for better log readability
-        lines = msg.split('\n')
-        formatted_msg = "\n" + "\n".join([f"### {line} ###" for line in lines])
-        Logger.new_print(channel, formatted_msg)
+        Printer.new_print(channel, msg, PrintCategory.HASHTAG)
 
     @staticmethod
     def traceback(e: Exception) -> None:
-        """Logs an exception with its full traceback. The standard library way."""
-        log.exception(e)
+        msg = "".join(TracebackException.from_exception(e).format())
+        Printer.new_print(PrintChannel.ERROR, msg, PrintCategory.GENERAL)
 
     @staticmethod
-    def depreciated_warning(option_string: str, help_msg: str = None, is_config=True) -> None:
-        source = "CONFIG" if is_config else "ARGUMENT"
-        title = f"DEPRECATION WARNING: {source} `{option_string}` is deprecated and will be ignored."
-        details = "This option will be removed in a future version."
+    def depreciated_warning(option_string: str, help_msg: str = None, CONFIG=True) -> None:
+        kind = "CONFIG" if CONFIG else "ARGUMENT"
+        msg = (
+            f"WARNING: {kind} `{option_string}` IS DEPRECIATED, IGNORING\n"
+            "THIS WILL BE REMOVED IN FUTURE VERSIONS"
+        )
         if help_msg:
-            details += f"\n{help_msg}"
-        Logger.hashtaged(PrintChannel.WARNING, f"{title}\n{details}")
+            msg += f"\n{help_msg}"
+        Printer.hashtaged(PrintChannel.MANDATORY, msg)
+
 
     @staticmethod
     def table(title: str, headers: tuple[str], tabular_data: list) -> None:
-        """Logs a formatted table."""
-        Logger.hashtaged(PrintChannel.MANDATORY, title)
-        table_str = tabulate(tabular_data, headers=headers, tablefmt='pretty')
-        Logger.new_print(PrintChannel.MANDATORY, f"\n{table_str}")
+        Printer.hashtaged(PrintChannel.MANDATORY, title)
+        Printer.new_print(PrintChannel.MANDATORY, tabulate(tabular_data, headers=headers, tablefmt='pretty'))
 
-    # --- Prefabs (Adapted) ---
-
+    # Prefabs
     @staticmethod
     def clear() -> None:
-        """Clears the console screen."""
-        system('cls' if platform.system() == WINDOWS_SYSTEM else 'clear')
+        """ Clear the console window """
+        if platform.system() == WINDOWS_SYSTEM:
+            system('cls')
+        else:
+            system('clear')
 
     @staticmethod
     def splash() -> None:
-        """Displays splash screen, now through the logger."""
-        splash_art = (
-            "    ███████╗ ██████╗ ████████╗██╗███████╗██╗   ██╗\n"
-            "    ╚══███╔╝██╔═══██╗╚══██╔══╝██║██╔════╝╚██╗ ██╔╝\n"
-            "      ███╔╝ ██║   ██║   ██║   ██║█████╗   ╚████╔╝ \n"
-            "     ███╔╝  ██║   ██║   ██║   ██║██╔══╝    ╚██╔╝  \n"
-            "    ███████╗╚██████╔╝   ██║   ██║██║        ██║   \n"
-            "    ╚══════╝ ╚═════╝    ╚═╝   ╚═╝╚═╝        ╚═╝   "
-        )
-        Logger.new_print(PrintChannel.SPLASH, f"\n{splash_art}\n")
+        """ Displays splash screen """
+        Printer.new_print(PrintChannel.SPLASH,
+        "    ███████╗ ██████╗ ████████╗██╗███████╗██╗   ██╗"+"\n"+\
+        "    ╚══███╔╝██╔═══██╗╚══██╔══╝██║██╔════╝╚██╗ ██╔╝"+"\n"+\
+        "      ███╔╝ ██║   ██║   ██║   ██║█████╗   ╚████╔╝ "+"\n"+\
+        "     ███╔╝  ██║   ██║   ██║   ██║██╔══╝    ╚██╔╝  "+"\n"+\
+        "    ███████╗╚██████╔╝   ██║   ██║██║        ██║   "+"\n"+\
+        "    ╚══════╝ ╚═════╝    ╚═╝   ╚═╝╚═╝        ╚═╝   "+"\n" )
 
     @staticmethod
     def search_select() -> None:
-        """Displays search selection help text."""
-        msg = (
-            "\n> SELECT A DOWNLOAD OPTION BY ID\n"
-            "> SELECT A RANGE BY ADDING A DASH BETWEEN BOTH ID's\n"
-            "> OR PARTICULAR OPTIONS BY ADDING A COMMA BETWEEN ID's"
+        """ Displays search selection instructions """
+        Printer.new_print(PrintChannel.MANDATORY,
+        "> SELECT A DOWNLOAD OPTION BY ID\n" +
+        "> SELECT A RANGE BY ADDING A DASH BETWEEN BOTH ID's\n" +
+        "> OR PARTICULAR OPTIONS BY ADDING A COMMA BETWEEN ID's\n",
+        category=PrintCategory.GENERAL
         )
-        Logger.new_print(PrintChannel.MANDATORY, msg)
-
-    # --- Progress Bars (Simplified) ---
-
-    @staticmethod
-    def pbar(*args, **kwargs) -> tqdm:
-        """Creates and returns a tqdm progress bar.
-        
-        Note: tqdm is an interactive element. In a non-interactive log file, it will
-        print its final state, which is usually sufficient.
-        """
-        # To make logging and tqdm work together, redirect logging through tqdm
-        # This should be done once at application start if progress bars are used
-        # from tqdm.contrib.logging import logging_redirect_tqdm
-        # with logging_redirect_tqdm():
-        #     ... your code with progress bars ...
-        return tqdm(*args, **kwargs)
-
-
-class Loader:
-    """
-    A simple, log-friendly context manager to show the start and end of a task.
-    Replaces the complex animated loader.
-    
-    Usage:
-    with Loader(PrintChannel.MANDATORY, "Doing a long task..."):
-        # your code here
-        time.sleep(2)
-    
-    Log Output:
-    [INFO] Starting: Doing a long task...
-    [INFO] Finished: Doing a long task...
-    """
-
-    def __init__(self, channel: PrintChannel, desc: str = "Loading...", end_msg: str | None = None):
-        self.channel = channel
-        self.desc = desc
-        self.end_msg = end_msg if end_msg is not None else f"Finished: {self.desc}"
-
-    def __enter__(self):
-        Logger.new_print(self.channel, f"Starting: {self.desc}")
-        return self
-
-    def __exit__(self, exc_type, exc_value, tb):
-        if exc_type:
-            # If an error occurred, log it differently
-            Logger.new_print(PrintChannel.ERROR, f"Failed: {self.desc}")
-        else:
-            Logger.new_print(self.channel, self.end_msg)
