@@ -16,27 +16,48 @@ import time
 from math import floor
 
 class SimplePbar:
-    def __init__(self, total, desc="", unit="it"):
-        self.total = total
+    def __init__(self, iterable=None, desc="", total=None, unit="it",
+                 disable=False, position=0, unit_scale=False, unit_divisor=1000,
+                 leave=False, dynamic_ncols=True):
+        self.iterable = iterable
+        self.total = total if total is not None else (len(iterable) if iterable is not None else 0)
         self.n = 0
         self.start_time = time.time()
         self.desc = desc
         self.unit = unit
+        self.pos = position
+        self.disable = disable
+        self._done = False
 
     def update(self, step=1):
+        if self.disable:
+            return
         self.n += step
         elapsed = time.time() - self.start_time
         rate = self.n / elapsed if elapsed > 0 else 0
         percent = (self.n / self.total) * 100 if self.total else 0
         eta = (self.total - self.n) / rate if rate > 0 else float("inf")
 
-        # Simple one-line update (✅ regex-friendly)
         line = f"{self.desc}: {floor(percent)}% | {self.n}/{self.total} {self.unit} | {elapsed:0.1f}s elapsed | ETA {eta:0.1f}s"
-        tqdm.write(line)  # use tqdm.write to not break logs
+        tqdm.write(line)
+
+    def refresh(self):
+        # no-op, but keep API compatibility
+        pass
 
     def close(self):
-        line = f"{self.desc}: 100% | {self.total}/{self.total} {self.unit} | Done!"
-        tqdm.write(line)
+        if not self._done and not self.disable:
+            line = f"{self.desc}: 100% | {self.total}/{self.total} {self.unit} | Done!"
+            tqdm.write(line)
+            self._done = True
+
+    def __iter__(self):
+        if self.iterable is None:
+            return
+        for item in self.iterable:
+            yield item
+            self.update()
+        self.close()
 
 UP_ONE_LINE = "\033[A"
 DOWN_ONE_LINE = "\033[B"
@@ -251,15 +272,22 @@ class Printer:
     @staticmethod
     def pbar(iterable=None, desc=None, total=None, unit='it',
          disable=False, unit_scale=False, unit_divisor=1000, pos=1):
-        # if iterable is provided, wrap it
-        if iterable is not None:
-            pbar = SimplePbar(len(iterable), desc=desc or "", unit=unit)
-            for item in iterable:
-                yield item
-                pbar.update()
-            pbar.close()
-        else:
-            return SimplePbar(total=total, desc=desc or "", unit=unit)
+
+        new_pbar = SimplePbar(
+             iterable=iterable,
+             desc=desc or "",
+             total=total,
+             unit=unit,
+             disable=disable,
+             position=pos,
+             unit_scale=unit_scale,
+             unit_divisor=unit_divisor,
+             leave=False,
+             dynamic_ncols=True
+        )
+        if not new_pbar.disable:
+             ACTIVE_PBARS.append(new_pbar)
+        return new_pbar
 
     @staticmethod
     def refresh_all_pbars(pbar_stack: list[tqdm] | None, skip_pop: bool = False) -> None:
