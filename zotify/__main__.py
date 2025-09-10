@@ -2,10 +2,11 @@
 
 """
 Zotify
-It's like youtube-dl, but for that other music platform.
+It's like youtube-dl, but for that other music platform. lol
 """
 
 import argparse
+import os
 
 from zotify import __version__
 from zotify.app import client
@@ -22,6 +23,7 @@ class DepreciatedAction(argparse.Action):
         Printer.depreciated_warning(option_string, self.help, CONFIG=False)
         setattr(namespace, self.dest, values)
 
+
 DEPRECIATED_FLAGS = (
     {"flags":    ('-d', '--download',),     "type":    str,     "help":    'Use `--file` (`-f`) instead'},
 )
@@ -31,6 +33,12 @@ def main():
         description='A music and podcast downloader needing only Python and FFMPEG.')
     
     parser.register('action', 'depreciated_ignore_warn', DepreciatedAction)
+
+    # --- NEW FLAG HERE ---
+    parser.add_argument('--proxy',
+                        type=str,
+                        help='Specify an HTTP/HTTPS proxy (e.g. http://user:pass@host:port)')
+    # ---------------------
     
     parser.add_argument('--version',
                         action='version',
@@ -63,10 +71,9 @@ def main():
     group = parser.add_mutually_exclusive_group(required=False)
     group.add_argument('urls',
                        type=str,
-                       # action='extend',
                        default='',
                        nargs='*',
-                       help='Download track(s), album(s), playlist(s), podcast episode(s), or artist(s) specified by the URL(s) passed as a command line argument(s). If an artist\'s URL is given, all albums by the specified artist will be downloaded. Can take multiple URLs as multiple arguments.')
+                       help="Download tracks/albums/playlists/etc from Spotify URLs")
     group.add_argument('-l', '--liked',
                        dest='liked_songs',
                        action='store_true',
@@ -82,15 +89,15 @@ def main():
                        type=str,
                        nargs='?',
                        const=' ',
-                       help='Search tracks/albums/artists/playlists based on argument (interactive)')
+                       help='Search tracks/albums/artists/playlists')
     group.add_argument('-f', '--file',
                        type=str,
                        dest='file_of_urls',
-                       help='Download all tracks/albums/episodes/playlists URLs within the file passed as argument')
+                       help='Download all tracks/albums/episodes/playlists URLs within the file')
     group.add_argument('-v', '--verify-library',
                        dest='verify_library',
                        action='store_true',
-                       help='Check metadata for all tracks in ROOT_PATH or listed in SONG_ARCHIVE, updating the metadata if necessary. This will not download any new tracks, but may take a very, very long time.')
+                       help='Check metadata for all tracks in ROOT_PATH or listed in SONG_ARCHIVE')
     
     for flag in DEPRECIATED_FLAGS: 
         group.add_argument(*flag["flags"],
@@ -102,19 +109,24 @@ def main():
         parser.add_argument(*DEPRECIATED_CONFIGS[key]['arg'],
                             type=str,
                             action='depreciated_ignore_warn',
-                            help=f'Delete the {key} flag from the commandline call'
-                            )
+                            help=f'Delete the {key} flag from the commandline call')
     
     for key in CONFIG_VALUES:
         parser.add_argument(*CONFIG_VALUES[key]['arg'],
-                            type=str, #type conversion occurs in config.parse_arg_value()
+                            type=str,
                             dest=key.lower(),
-                            default=None,
-                            )
+                            default=None)
     
     parser.set_defaults(func=client)
     
     args = parser.parse_args()
+
+    if args.proxy:
+        os.environ['HTTP_PROXY']  = args.proxy
+        os.environ['HTTPS_PROXY'] = args.proxy
+        os.environ['http_proxy']  = args.proxy
+        os.environ['https_proxy'] = args.proxy
+
     try:
         args.func(args)
     except KeyboardInterrupt:
